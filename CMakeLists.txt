@@ -5,6 +5,7 @@ include(CTest)
 enable_testing()
 
 find_package(SDL2 REQUIRED)
+find_package(Vulkan REQUIRED)
 add_executable(vulkan-tutorial main.cpp)
 
 # Required on Windows
@@ -13,6 +14,8 @@ if (TARGET SDL2::SDL2main)
 endif()
 
 target_link_libraries(vulkan-tutorial PRIVATE SDL2::SDL2)
+
+target_link_libraries(vulkan-tutorial PRIVATE Vulkan::Vulkan)
 
 set(CPACK_PROJECT_NAME ${PROJECT_NAME})
 set(CPACK_PROJECT_VERSION ${PROJECT_VERSION})

@@ -1,6 +1,7 @@
 #include <iostream>
 
 #include <SDL.h>
+#include <vulkan/vulkan.h>
 
 #define DEFAULT_WIDTH (800)
 #define DEFAULT_HEIGHT (600)
@@ -27,6 +28,11 @@ int main(int argc, char** argv) {
         std::cerr << "Failed to create SDL window: " << SDL_GetError() << "\n";
         return 1;
     }
+
+    uint32_t extension_count = 0;
+    vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, nullptr);
+
+    std::cout << "Found " << extension_count << " extensions\n";
 
     return 0;
 }
