@@ -6,6 +6,7 @@
 #include <vulkan/vk_enum_string_helper.h>
 
 #include <optional>
+#include <set>
 #include <vector>
 
 #define APP_NAME "vulkan-tutorial"
@@ -123,10 +124,20 @@ int main(int argc, char** argv) {
     }
     std::cout << "Created VkInstance" << std::endl;
 
+    VkSurfaceKHR surface;
+    if (SDL_Vulkan_CreateSurface(window, instance, &surface) == SDL_FALSE) {
+        std::cerr << "Failed to create SDL window surface for Vulkan: " << SDL_GetError() << std::endl;
+        return 1;
+    }
+
     delete[] sdl_ext_names;
 
+    const std::vector<const char *> device_extensions = {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME
+    };
+
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
-    int queue_graphics_family = 0;
+    int queue_graphics_family = 0, queue_present_family = 0;
     {
         uint32_t device_count = 0;
         vkEnumeratePhysicalDevices(instance, &device_count, NULL);
@@ -146,7 +157,19 @@ int main(int argc, char** argv) {
             VkPhysicalDeviceFeatures features;
             vkGetPhysicalDeviceProperties(device, &props);
             vkGetPhysicalDeviceFeatures(device, &features);
-            if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+
+            uint32_t extension_count = 0;
+            vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count, NULL);
+            std::vector<VkExtensionProperties> extensions(extension_count);
+            vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count, extensions.data());
+
+            std::set<std::string> required_extensions(device_extensions.begin(), device_extensions.end());
+            for (const auto &extension : extensions) {
+                required_extensions.erase(extension.extensionName);
+            }
+
+            if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
+                required_extensions.empty()) {
                 physical_device = device;
                 break;
             }
@@ -165,41 +188,59 @@ int main(int argc, char** argv) {
         std::vector<VkQueueFamilyProperties> queue_families(queue_family_count);
         vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, queue_families.data());
 
-        std::optional<int> found;
+        std::optional<int> graphics, present;
         for (std::size_t idx = 0; idx != queue_family_count; ++idx) {
             if (queue_families[idx].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-                found = static_cast<int>(idx);
-                break;
+                graphics = static_cast<int>(idx);
+            }
+
+            VkBool32 present_support = false;
+            vkGetPhysicalDeviceSurfaceSupportKHR(physical_device, static_cast<uint32_t>(idx), surface, &present_support);
+            if (present_support) {
+                present = static_cast<int>(idx);
             }
         }
 
-        if (!found) {
+        if (!graphics) {
             std::cerr << "No queue family with graphics capability found" << std::endl;
             return 1;
         }
-        queue_graphics_family = *found;
-        std::cout << "Found queue graphics family" << std::endl;
+        if (!present) {
+            std::cerr << "No queue family with present capability found" << std::endl;
+            return 1;
+        }
+        queue_graphics_family = *graphics;
+        queue_present_family = *present;
+        std::cout << "Found queue graphics and present families" << std::endl;
     }
 
     // Create logical device
     VkDevice device = VK_NULL_HANDLE;
     {
-        VkDeviceQueueCreateInfo queue_create_info{};
-        queue_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queue_create_info.queueFamilyIndex = queue_graphics_family;
-        queue_create_info.queueCount = 1;
+        std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
 
+        std::set<int> unique_queue_families = {queue_graphics_family, queue_present_family};
         float queue_priority = 1.0f;
-        queue_create_info.pQueuePriorities = &queue_priority;
+        for (const auto &family : unique_queue_families) {
+            VkDeviceQueueCreateInfo queue_create_info{};
+            queue_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+            queue_create_info.queueFamilyIndex = queue_graphics_family;
+            queue_create_info.queueCount = 1;
+            queue_create_info.pQueuePriorities = &queue_priority;
+            queue_create_infos.emplace_back(std::move(queue_create_info));
+        }
 
         VkPhysicalDeviceFeatures device_features;
         vkGetPhysicalDeviceFeatures(physical_device, &device_features);
         VkDeviceCreateInfo create_info{};
         create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-        create_info.pQueueCreateInfos = &queue_create_info;
-        create_info.queueCreateInfoCount = 1;
+        create_info.pQueueCreateInfos = queue_create_infos.data();
+        create_info.queueCreateInfoCount = static_cast<uint32_t>(queue_create_infos.size());
         create_info.pEnabledFeatures = &device_features;
-        create_info.enabledExtensionCount = 0;
+
+        create_info.ppEnabledExtensionNames = device_extensions.data();
+        create_info.enabledExtensionCount = static_cast<uint32_t>(device_extensions.size());
+
         if (enable_validation_layers) {
             create_info.enabledLayerCount = static_cast<uint32_t>(validation_layers.size());
             create_info.ppEnabledLayerNames = validation_layers.data();
@@ -214,6 +255,13 @@ int main(int argc, char** argv) {
         std::cout << "Created logical device" << std::endl;
     }
 
+    // Get our graphics queue.
+    VkQueue graphics_queue, present_queue;
+    // NOTE: These queues may well be the same, but these are just handles
+    // to them. When creating the logical device we ensured we used unique 
+    // queue indices.
+    vkGetDeviceQueue(device, queue_graphics_family, 0, &graphics_queue);
+    vkGetDeviceQueue(device, queue_present_family, 0, &present_queue);
 
     // SDL event loop
     SDL_Event e;
@@ -231,7 +279,8 @@ int main(int argc, char** argv) {
     std::cout << "Exiting...\n";
 
     vkDestroyDevice(device, apiAllocCallbacks);
-    vkDestroyInstance(instance, nullptr);
+    vkDestroySurfaceKHR(instance, surface, apiAllocCallbacks);
+    vkDestroyInstance(instance, apiAllocCallbacks);
 
     SDL_DestroyWindow(window);
     SDL_Quit();
