@@ -5,6 +5,7 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_enum_string_helper.h>
 
+#include <optional>
 #include <vector>
 
 #define APP_NAME "vulkan-tutorial"
@@ -63,28 +64,156 @@ int main(int argc, char** argv) {
     }
     createInfo.enabledExtensionCount = sdl_ext_count;
     createInfo.ppEnabledExtensionNames = sdl_ext_names;
-    createInfo.enabledLayerCount = 0;
+
+    { // Dump available instance extensions 
+        uint32_t ext_count = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &ext_count, nullptr);
+
+        std::cout << "Found " << ext_count << " extensions:\n";
+
+        std::vector<VkExtensionProperties> exts(ext_count);
+        vkEnumerateInstanceExtensionProperties(nullptr, &ext_count, exts.data());
+
+        for (const auto &ext : exts) {
+            std::cout << "  " << ext.extensionName << "\n";
+        }
+    }
+
+    const std::vector<const char *> validation_layers = {
+        "VK_LAYER_KHRONOS_validation"
+    };
+
+    #ifdef NDEBUG
+    const bool enable_validation_layers = false;
+    #else 
+    const bool enable_validation_layers = false;
+    #endif
+
+    { // Validation layer configuration
+
+        if (enable_validation_layers) {
+            uint32_t layer_count = 0;
+            vkEnumerateInstanceLayerProperties(&layer_count, NULL);
+
+            std::vector<VkLayerProperties> layers(layer_count);
+            vkEnumerateInstanceLayerProperties(&layer_count, layers.data());
+        
+            bool found = false;
+            for (const auto &layer_name : validation_layers) {
+                auto it = std::find_if(layers.begin(), layers.end(), [&layer_name](const auto &properties) {
+                    return std::strcmp(properties.layerName, layer_name) == 0;
+                });
+                if (it == layers.end()) {
+                    std::cerr << "Failed to find validation layer " << layer_name << std::endl;
+                    return 1;
+                }
+            }
+            createInfo.enabledLayerCount = static_cast<uint32_t>(validation_layers.size());
+            createInfo.ppEnabledLayerNames = validation_layers.data();
+        } else {
+            createInfo.enabledLayerCount = 0;
+        }
+    }
 
     const VkAllocationCallbacks *apiAllocCallbacks = nullptr;
     VkResult result = VK_SUCCESS;
     if ((result = vkCreateInstance(&createInfo, apiAllocCallbacks, &instance)) != VK_SUCCESS) {
-        std::cerr << "Failed to create Vulkan instance: " << string_VkResult(result) << "\n";
+        std::cerr << "Failed to create Vulkan instance: " << string_VkResult(result) << std::endl;
         return 1;
     }
+    std::cout << "Created VkInstance" << std::endl;
 
     delete[] sdl_ext_names;
 
-    uint32_t ext_count = 0;
-    vkEnumerateInstanceExtensionProperties(nullptr, &ext_count, nullptr);
+    VkPhysicalDevice physical_device = VK_NULL_HANDLE;
+    int queue_graphics_family = 0;
+    {
+        uint32_t device_count = 0;
+        vkEnumeratePhysicalDevices(instance, &device_count, NULL);
 
-    std::cout << "Found " << ext_count << " extensions:\n";
+        if (device_count == 0) {
+            std::cerr << "Failed to find a VkPhysicalDevice to use" << std::endl;
+            return 1;
+        }
+        std::cout << "Found " << device_count << " potential VkPhysicalDevices to use" << std::endl;
 
-    std::vector<VkExtensionProperties> exts(ext_count);
-    vkEnumerateInstanceExtensionProperties(nullptr, &ext_count, exts.data());
+        std::vector<VkPhysicalDevice> devices(device_count);
+        vkEnumeratePhysicalDevices(instance, &device_count, devices.data());
 
-    for (const auto &ext : exts) {
-        std::cout << "  " << ext.extensionName << "\n";
+        for (const auto &device : devices) {
+            std::cout << "Checking a physical device" << std::endl;
+            VkPhysicalDeviceProperties props;
+            VkPhysicalDeviceFeatures features;
+            vkGetPhysicalDeviceProperties(device, &props);
+            vkGetPhysicalDeviceFeatures(device, &features);
+            if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+                physical_device = device;
+                break;
+            }
+        }
+
+        if (physical_device == VK_NULL_HANDLE) {
+            std::cerr << "Failed to find a suitable VkPhysicalDevice to use" << std::endl;
+            return 1;
+        }
+
+        std::cout << "Found a VkPhysicalDevice" << std::endl;
+
+        uint32_t queue_family_count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, NULL);
+
+        std::vector<VkQueueFamilyProperties> queue_families(queue_family_count);
+        vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, queue_families.data());
+
+        std::optional<int> found;
+        for (std::size_t idx = 0; idx != queue_family_count; ++idx) {
+            if (queue_families[idx].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+                found = static_cast<int>(idx);
+                break;
+            }
+        }
+
+        if (!found) {
+            std::cerr << "No queue family with graphics capability found" << std::endl;
+            return 1;
+        }
+        queue_graphics_family = *found;
+        std::cout << "Found queue graphics family" << std::endl;
     }
+
+    // Create logical device
+    VkDevice device = VK_NULL_HANDLE;
+    {
+        VkDeviceQueueCreateInfo queue_create_info{};
+        queue_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queue_create_info.queueFamilyIndex = queue_graphics_family;
+        queue_create_info.queueCount = 1;
+
+        float queue_priority = 1.0f;
+        queue_create_info.pQueuePriorities = &queue_priority;
+
+        VkPhysicalDeviceFeatures device_features;
+        vkGetPhysicalDeviceFeatures(physical_device, &device_features);
+        VkDeviceCreateInfo create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+        create_info.pQueueCreateInfos = &queue_create_info;
+        create_info.queueCreateInfoCount = 1;
+        create_info.pEnabledFeatures = &device_features;
+        create_info.enabledExtensionCount = 0;
+        if (enable_validation_layers) {
+            create_info.enabledLayerCount = static_cast<uint32_t>(validation_layers.size());
+            create_info.ppEnabledLayerNames = validation_layers.data();
+        } else {
+            create_info.enabledLayerCount = 0;
+        }
+        
+        if ((result = vkCreateDevice(physical_device, &create_info, apiAllocCallbacks, &device)) != VK_SUCCESS) {
+            std::cerr << "Failed to create logical device: " << string_VkResult(result) << std::endl;
+            return 1;
+        }
+        std::cout << "Created logical device" << std::endl;
+    }
+
 
     // SDL event loop
     SDL_Event e;
@@ -92,11 +221,16 @@ int main(int argc, char** argv) {
     while (!quit) {
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) {
+                std::cout << "Got SDL_QUIT" << std::endl;
                 quit = true;
+                break;
             }
         }
     }
 
+    std::cout << "Exiting...\n";
+
+    vkDestroyDevice(device, apiAllocCallbacks);
     vkDestroyInstance(instance, nullptr);
 
     SDL_DestroyWindow(window);
