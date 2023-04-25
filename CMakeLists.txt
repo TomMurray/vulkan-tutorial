@@ -6,7 +6,12 @@ enable_testing()
 
 find_package(SDL2 REQUIRED)
 find_package(Vulkan REQUIRED)
+
 add_executable(vulkan-tutorial main.cpp)
+
+set_target_properties(vulkan-tutorial PROPERTIES
+  CXX_STANDARD 17
+  CXX_EXTENSIONS OFF)
 
 # Required on Windows
 if (TARGET SDL2::SDL2main)
