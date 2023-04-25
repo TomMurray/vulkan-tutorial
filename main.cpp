@@ -1,5 +1,8 @@
 #include <iostream>
 
-int main(int, char**) {
+#include <SDL.h>
+
+int main(int argc, char** argv) {
     std::cout << "Hello, world!\n";
+    return 0;
 }
