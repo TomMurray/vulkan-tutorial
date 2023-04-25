@@ -34,6 +34,17 @@ int main(int argc, char** argv) {
 
     std::cout << "Found " << extension_count << " extensions\n";
 
+    // SDL event loop
+    SDL_Event e;
+    bool quit = false;
+    while (!quit) {
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) {
+                quit = true;
+            }
+        }
+    }
+
     SDL_DestroyWindow(window);
     SDL_Quit();
 
