@@ -34,5 +34,8 @@ int main(int argc, char** argv) {
 
     std::cout << "Found " << extension_count << " extensions\n";
 
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+
     return 0;
 }
