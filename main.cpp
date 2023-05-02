@@ -5,6 +5,7 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_enum_string_helper.h>
 
+#include <algorithm>
 #include <optional>
 #include <set>
 #include <vector>
@@ -138,6 +139,11 @@ int main(int argc, char** argv) {
 
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     int queue_graphics_family = 0, queue_present_family = 0;
+    struct SwapChainSupport {
+        VkSurfaceCapabilitiesKHR caps;
+        std::vector<VkSurfaceFormatKHR> formats;
+        std::vector<VkPresentModeKHR> modes;
+    } swap_chain_support{};
     {
         uint32_t device_count = 0;
         vkEnumeratePhysicalDevices(instance, &device_count, NULL);
@@ -158,6 +164,10 @@ int main(int argc, char** argv) {
             vkGetPhysicalDeviceProperties(device, &props);
             vkGetPhysicalDeviceFeatures(device, &features);
 
+            if (props.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+                continue;
+            }
+
             uint32_t extension_count = 0;
             vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count, NULL);
             std::vector<VkExtensionProperties> extensions(extension_count);
@@ -168,11 +178,36 @@ int main(int argc, char** argv) {
                 required_extensions.erase(extension.extensionName);
             }
 
-            if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
-                required_extensions.empty()) {
-                physical_device = device;
-                break;
+            if (!required_extensions.empty()) {
+                continue;
             }
+
+            // Check swap-chain support
+            vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &swap_chain_support.caps);
+
+            uint32_t format_count = 0;
+            vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, NULL);
+
+            if (format_count == 0) {
+                continue;
+            }
+
+            swap_chain_support.formats.resize(format_count);
+            vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, swap_chain_support.formats.data());
+
+
+            uint32_t present_mode_count = 0;
+            vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &present_mode_count, NULL);
+
+            if (present_mode_count == 0) {
+                continue;
+            }
+
+            swap_chain_support.modes.resize(present_mode_count);
+            vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &present_mode_count, swap_chain_support.modes.data());
+
+            physical_device = device;
+            break;
         }
 
         if (physical_device == VK_NULL_HANDLE) {
@@ -263,6 +298,95 @@ int main(int argc, char** argv) {
     vkGetDeviceQueue(device, queue_graphics_family, 0, &graphics_queue);
     vkGetDeviceQueue(device, queue_present_family, 0, &present_queue);
 
+    VkSwapchainKHR swap_chain = VK_NULL_HANDLE;
+    { // Create the swap chain
+        VkSurfaceFormatKHR selected_format = swap_chain_support.formats.front();
+        // Prefer B8G8R8_SRGB over others, but we use a fallback.
+        for (const auto &format : swap_chain_support.formats) {
+            if (format.format == VK_FORMAT_B8G8R8_SRGB && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+                selected_format = format;
+                break;
+            }
+        }
+
+        VkPresentModeKHR selected_present_mode = swap_chain_support.modes.front();
+        for (const auto &present_mode : swap_chain_support.modes) {
+            if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+                selected_present_mode = present_mode;
+                break;
+            }
+        }
+
+        VkExtent2D selected_extent;
+        if (swap_chain_support.caps.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
+            selected_extent = swap_chain_support.caps.currentExtent;
+        } else {
+            int width, height;
+            SDL_Vulkan_GetDrawableSize(window, &width, &height);
+            VkExtent2D ext = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
+
+            // Clamping based on reported capabilities of the swap chain
+            ext.width = std::clamp(ext.width, swap_chain_support.caps.minImageExtent.width, swap_chain_support.caps.maxImageExtent.width);
+            ext.height = std::clamp(ext.height, swap_chain_support.caps.minImageExtent.height, swap_chain_support.caps.maxImageExtent.height);
+
+            selected_extent = ext;
+        }
+
+        // Choose image count for swap chain
+        // The minimum means we might have to wait on the driver before
+        // we can acquire another image to render to. Therefore request
+        // at least one more image than the min.
+        uint32_t image_count = swap_chain_support.caps.minImageCount + 1;
+
+        if (swap_chain_support.caps.maxImageCount != 0) {
+            image_count = std::min(image_count, swap_chain_support.caps.maxImageCount);
+        }
+
+        VkSwapchainCreateInfoKHR create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+        create_info.surface = surface;
+        create_info.minImageCount = image_count;
+        create_info.imageColorSpace = selected_format.colorSpace;
+        create_info.imageFormat = selected_format.format;
+        create_info.imageExtent = selected_extent;
+        create_info.imageArrayLayers = 1;
+        create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+        // Some extra configuration depending on whether the graphics and
+        // present queue families are different. We must either explicitly
+        // manage ownership of an image by different queues, or use the
+        // concurrent sharing mode to allow shared ownership between queues which is what we do here.
+        uint32_t queue_family_indices[] = {
+            static_cast<uint32_t>(queue_graphics_family),
+            static_cast<uint32_t>(queue_present_family)
+        };
+        if (queue_graphics_family != queue_present_family) {
+            create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+            create_info.queueFamilyIndexCount = 2;
+            create_info.pQueueFamilyIndices = queue_family_indices;
+        } else {
+            create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            create_info.queueFamilyIndexCount = 1;
+            create_info.pQueueFamilyIndices = NULL;
+        }
+
+        create_info.preTransform = swap_chain_support.caps.currentTransform;
+        create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        create_info.presentMode = selected_present_mode;
+        // e.g. if another window comes in front of the game window, this
+        // will mean we actually clip those pixels and don't produce colour
+        // values for them.
+        create_info.clipped = VK_TRUE;
+        create_info.oldSwapchain = VK_NULL_HANDLE;
+
+        if ((result = vkCreateSwapchainKHR(device, &create_info, NULL, &swap_chain)) != VK_SUCCESS) {
+            std::cerr << "Failed to create swap chain: " << string_VkResult(result) << "\n";
+            return 1;
+        }
+
+        std::cout << "Created swap chain\n";
+    }
+
     // SDL event loop
     SDL_Event e;
     bool quit = false;
@@ -278,6 +402,7 @@ int main(int argc, char** argv) {
 
     std::cout << "Exiting...\n";
 
+    vkDestroySwapchainKHR(device, swap_chain, apiAllocCallbacks);
     vkDestroyDevice(device, apiAllocCallbacks);
     vkDestroySurfaceKHR(instance, surface, apiAllocCallbacks);
     vkDestroyInstance(instance, apiAllocCallbacks);
