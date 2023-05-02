@@ -299,6 +299,7 @@ int main(int argc, char** argv) {
     vkGetDeviceQueue(device, queue_present_family, 0, &present_queue);
 
     VkSwapchainKHR swap_chain = VK_NULL_HANDLE;
+    std::vector<VkImageView> swap_image_views;
     { // Create the swap chain
         VkSurfaceFormatKHR selected_format = swap_chain_support.formats.front();
         // Prefer B8G8R8_SRGB over others, but we use a fallback.
@@ -360,6 +361,7 @@ int main(int argc, char** argv) {
             static_cast<uint32_t>(queue_graphics_family),
             static_cast<uint32_t>(queue_present_family)
         };
+
         if (queue_graphics_family != queue_present_family) {
             create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
             create_info.queueFamilyIndexCount = 2;
@@ -385,7 +387,38 @@ int main(int argc, char** argv) {
         }
 
         std::cout << "Created swap chain\n";
+
+        vkGetSwapchainImagesKHR(device, swap_chain, &image_count, NULL);
+        std::vector<VkImage> swap_images(image_count);
+        vkGetSwapchainImagesKHR(device, swap_chain, &image_count, swap_images.data());
+
+        // Create image views for our swap chain images
+        swap_image_views.resize(image_count);
+        for (std::size_t i = 0; i != swap_images.size(); ++i) {
+            VkImageViewCreateInfo create_info{};
+            create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            create_info.image = swap_images[i];
+
+            create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            create_info.format = selected_format.format;
+            create_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+            create_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+            create_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+            create_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+
+            create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            create_info.subresourceRange.baseMipLevel = 0;
+            create_info.subresourceRange.levelCount = 1;
+            create_info.subresourceRange.baseArrayLayer = 0;
+            create_info.subresourceRange.layerCount = 0;
+
+            if ((result = vkCreateImageView(device, &create_info, apiAllocCallbacks, &swap_image_views[i])) != VK_SUCCESS) {
+                std::cerr << "Failed to create swap chain image view " << i << ": " << string_VkResult(result) << "\n";
+                return 1;
+            }
+        }
     }
+
 
     // SDL event loop
     SDL_Event e;
@@ -402,6 +435,9 @@ int main(int argc, char** argv) {
 
     std::cout << "Exiting...\n";
 
+    for (auto &view : swap_image_views) {
+        vkDestroyImageView(device, view, apiAllocCallbacks);
+    }
     vkDestroySwapchainKHR(device, swap_chain, apiAllocCallbacks);
     vkDestroyDevice(device, apiAllocCallbacks);
     vkDestroySurfaceKHR(instance, surface, apiAllocCallbacks);
