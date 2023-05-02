@@ -7,7 +7,11 @@ enable_testing()
 find_package(SDL2 REQUIRED)
 find_package(Vulkan REQUIRED)
 
+add_subdirectory(shaders)
+
 add_executable(vulkan-tutorial main.cpp)
+
+add_dependencies(vulkan-tutorial shaders)
 
 set_target_properties(vulkan-tutorial PROPERTIES
   CXX_STANDARD 17
