@@ -14,7 +14,7 @@ add_executable(vulkan-tutorial main.cpp)
 add_dependencies(vulkan-tutorial shaders)
 
 set_target_properties(vulkan-tutorial PROPERTIES
-  CXX_STANDARD 17
+  CXX_STANDARD 20 
   CXX_EXTENSIONS OFF)
 
 # Required on Windows
