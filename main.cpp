@@ -768,7 +768,7 @@ int main(int argc, char** argv) {
                 .x = 0.0f,
                 .y = 0.0f,
                 .width = (float) swap_chain_extent.width,
-                .height = (float) swap_chain_extent.width,
+                .height = (float) swap_chain_extent.height,
                 .minDepth = 0.0f,
                 .maxDepth = 1.0f,
             };
