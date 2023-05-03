@@ -314,8 +314,8 @@ int main(int argc, char** argv) {
     VkSwapchainKHR swap_chain = VK_NULL_HANDLE;
     std::vector<VkImageView> swap_image_views;
     VkExtent2D swap_chain_extent;
+    VkSurfaceFormatKHR selected_format = swap_chain_support.formats.front();
     { // Create the swap chain
-        VkSurfaceFormatKHR selected_format = swap_chain_support.formats.front();
         // Prefer B8G8R8_SRGB over others, but we use a fallback.
         for (const auto &format : swap_chain_support.formats) {
             if (format.format == VK_FORMAT_B8G8R8_SRGB && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
@@ -458,7 +458,9 @@ int main(int argc, char** argv) {
     }
 
 
+    VkRenderPass render_pass;
     VkPipelineLayout pipeline_layout;
+    VkPipeline graphics_pipeline;
     { // Create pipeline
         VkPipelineShaderStageCreateInfo vert_create_info{};
         vert_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -482,10 +484,13 @@ int main(int argc, char** argv) {
             VK_DYNAMIC_STATE_SCISSOR
         };
 
-        VkPipelineDynamicStateCreateInfo dynamic;
-        dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-        dynamic.dynamicStateCount = static_cast<uint32_t>(dynamic_states.size());
-        dynamic.pDynamicStates = dynamic_states.data();
+        VkPipelineDynamicStateCreateInfo dynamic {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            .pNext = NULL,
+            .flags = 0,
+            .dynamicStateCount = static_cast<uint32_t>(dynamic_states.size()),
+            .pDynamicStates = dynamic_states.data(),
+        };
 
         VkPipelineVertexInputStateCreateInfo vertex_input{};
         vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -499,23 +504,30 @@ int main(int argc, char** argv) {
         input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         input_assembly.primitiveRestartEnable = VK_FALSE;
 
-        VkPipelineViewportStateCreateInfo viewport_state;
-        viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-        viewport_state.viewportCount = 1;
-        viewport_state.scissorCount = 1;
+        VkPipelineViewportStateCreateInfo viewport_state {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            .pNext = NULL,
+            .viewportCount = 1,
+            .pViewports = NULL,
+            .scissorCount = 1,
+            .pScissors = NULL
 
-        VkPipelineRasterizationStateCreateInfo rasterization;
-        rasterization.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-        rasterization.depthClampEnable = VK_FALSE;
-        rasterization.rasterizerDiscardEnable = VK_FALSE;
-        rasterization.polygonMode = VK_POLYGON_MODE_FILL;
-        rasterization.lineWidth = 1.0f;
-        rasterization.cullMode = VK_CULL_MODE_BACK_BIT;
-        rasterization.frontFace = VK_FRONT_FACE_CLOCKWISE;
-        rasterization.depthBiasEnable = VK_FALSE;
-        rasterization.depthBiasConstantFactor = 0.0f;
-        rasterization.depthBiasClamp = 0.0f;
-        rasterization.depthBiasSlopeFactor = 0.0f;
+        };
+
+        VkPipelineRasterizationStateCreateInfo rasterization {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            .pNext = NULL,
+            .depthClampEnable = VK_FALSE,
+            .rasterizerDiscardEnable = VK_FALSE,
+            .polygonMode = VK_POLYGON_MODE_FILL,
+            .cullMode = VK_CULL_MODE_BACK_BIT,
+            .frontFace = VK_FRONT_FACE_CLOCKWISE,
+            .depthBiasEnable = VK_FALSE,
+            .depthBiasConstantFactor = 0.0f,
+            .depthBiasClamp = 0.0f,
+            .depthBiasSlopeFactor = 0.0f,
+            .lineWidth = 1.0f,
+        };
 
         VkPipelineMultisampleStateCreateInfo msaa{};
         msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -544,6 +556,71 @@ int main(int argc, char** argv) {
         pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         if ((result = vkCreatePipelineLayout(device, &pipeline_layout_info, apiAllocCallbacks, &pipeline_layout)) != VK_SUCCESS) {
             std::cerr << "Failed to create pipeline layout: " << string_VkResult(result) << "\n";
+            return 1;
+        }
+
+        VkAttachmentDescription color_attachment{};
+        color_attachment.format = selected_format.format;
+        color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+
+        color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        color_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        color_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        color_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        color_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+        // Note that this relates directly to location = 0 in
+        // glsl fragment shader.
+        // Despite the final layout being PRESENT_SRC, we want
+        // optimal colour layout in this reference.
+        // Q: When is the layout transitioned. Does this happen
+        // at the end of the render pass...?
+        VkAttachmentReference color_ref{};
+        color_ref.attachment = 0;
+        color_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        // Sub-pass seems similar to command encoder scope in Metal
+        VkSubpassDescription subpass{
+            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &color_ref
+        };
+
+        VkRenderPassCreateInfo render_pass_info{
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+            .attachmentCount = 1,
+            .pAttachments = &color_attachment,
+            .subpassCount = 1,
+            .pSubpasses = &subpass
+        };
+
+        if ((result = vkCreateRenderPass(device, &render_pass_info, apiAllocCallbacks, &render_pass)) != VK_SUCCESS) {
+            std::cerr << "Failed to create render pass: " << string_VkResult(result) << "\n";
+            return 1;
+        }
+
+        VkGraphicsPipelineCreateInfo pipeline_info{
+            .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            .stageCount = 2,
+            .pStages = stages,
+            .pVertexInputState = &vertex_input,
+            .pInputAssemblyState = &input_assembly,
+            .pViewportState = &viewport_state,
+            .pRasterizationState = &rasterization,
+            .pMultisampleState = &msaa,
+            .pDepthStencilState = NULL, // VkPipelineDepthStencilStateCreateInfo
+            .pColorBlendState = &color_blend_state,
+            .pDynamicState = &dynamic,
+            .layout = pipeline_layout,
+            .renderPass = render_pass,
+            .subpass = 0,
+            .basePipelineHandle = VK_NULL_HANDLE,
+            .basePipelineIndex = -1
+        };
+
+        if ((result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &graphics_pipeline)) != VK_SUCCESS) {
+            std::cerr << "Failed to create graphics pipeline: " << string_VkResult(result) << "\n";
             return 1;
         }
 
@@ -576,6 +653,8 @@ int main(int argc, char** argv) {
 
     std::cout << "Exiting...\n";
 
+    vkDestroyPipeline(device, graphics_pipeline, apiAllocCallbacks);
+    vkDestroyRenderPass(device, render_pass, apiAllocCallbacks);
     vkDestroyPipelineLayout(device, pipeline_layout, apiAllocCallbacks);
 
     vkDestroyShaderModule(device, vert_module, apiAllocCallbacks);
