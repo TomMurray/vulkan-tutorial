@@ -829,6 +829,8 @@ int main(int argc, char** argv) {
 
     std::cout << "Exiting...\n";
 
+    vkWaitForFences(device, 1, &in_flight_fence, VK_TRUE, UINT64_MAX);
+
     vkDestroyFence(device, in_flight_fence, apiAllocCallbacks);
     vkDestroySemaphore(device, render_finished_sem, apiAllocCallbacks);
     vkDestroySemaphore(device, image_available_sem, apiAllocCallbacks);
