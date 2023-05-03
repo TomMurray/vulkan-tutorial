@@ -637,6 +637,27 @@ int main(int argc, char** argv) {
         scissor.extent = swap_chain_extent;
     }
 
+    std::vector<VkFramebuffer> swap_framebuffers(swap_image_views.size());
+    for (std::size_t i = 0; i != swap_image_views.size(); ++i) {
+        VkFramebufferCreateInfo framebuffer_info{
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .pNext = NULL,
+            .renderPass = render_pass,
+            .attachmentCount = 1,
+            .pAttachments = &swap_image_views[i],
+            .width = swap_chain_extent.width,
+            .height = swap_chain_extent.height,
+            .layers = 1
+        };
+
+        if ((result = vkCreateFramebuffer(device, &framebuffer_info, apiAllocCallbacks, &swap_framebuffers[i])) != VK_SUCCESS) {
+            std::cerr << "Error creating framebuffer for swap image " << i << ": " << string_VkResult(result) << "\n";
+            return 1;
+        }
+    }
+
+
+
 
     // SDL event loop
     SDL_Event e;
@@ -652,6 +673,10 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "Exiting...\n";
+
+    for (auto &fb : swap_framebuffers) {
+        vkDestroyFramebuffer(device, fb, apiAllocCallbacks);
+    }
 
     vkDestroyPipeline(device, graphics_pipeline, apiAllocCallbacks);
     vkDestroyRenderPass(device, render_pass, apiAllocCallbacks);
