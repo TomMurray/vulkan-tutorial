@@ -623,18 +623,6 @@ int main(int argc, char** argv) {
             std::cerr << "Failed to create graphics pipeline: " << string_VkResult(result) << "\n";
             return 1;
         }
-
-        VkViewport viewport {};
-        viewport.x = 0.0f;
-        viewport.y = 0.0f;
-        viewport.width = (float) swap_chain_extent.width;
-        viewport.height = (float) swap_chain_extent.width;
-        viewport.minDepth = 0.0f;
-        viewport.maxDepth = 1.0f;
-
-        VkRect2D scissor{};
-        scissor.offset = {0, 0};
-        scissor.extent = swap_chain_extent;
     }
 
     std::vector<VkFramebuffer> swap_framebuffers(swap_image_views.size());
@@ -656,8 +644,100 @@ int main(int argc, char** argv) {
         }
     }
 
+    VkCommandPool command_pool;
+    { // Create the command pool
+        VkCommandPoolCreateInfo pool_info{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .pNext = NULL,
+            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            .queueFamilyIndex = static_cast<uint32_t>(queue_graphics_family),
+        };
+
+        if ((result = vkCreateCommandPool(device, &pool_info, apiAllocCallbacks, &command_pool)) != VK_SUCCESS) {
+            std::cerr << "Failed to create command pool for graphics queue: " << string_VkResult(result) << "\n";
+            return 1;
+        }
+    }
+
+    VkCommandBuffer command_buffer;
+    {
+        VkCommandBufferAllocateInfo alloc_info{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = command_pool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
+
+        if ((result = vkAllocateCommandBuffers(device, &alloc_info, &command_buffer)) != VK_SUCCESS) {
+            std::cerr << "Failed to create command buffer: " << string_VkResult(result) << "\n";
+            return 1;
+        }
+    }
+
+    std::size_t image_index = 0;
+    { // Record our command buffer!
+        VkCommandBufferBeginInfo begin_info{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .pNext = NULL,
+            .flags = 0,
+            .pInheritanceInfo = NULL,
+        };
+        if ((result = vkBeginCommandBuffer(command_buffer, &begin_info)) != VK_SUCCESS) {
+            std::cerr << "Failed to begin command buffer: " << string_VkResult(result) << "\n";
+            return 1;
+        }
+
+        VkClearValue clear_color = {{{
+            0.0f, 0.0f, 0.0f, 1.0f
+        }}};
+        VkRenderPassBeginInfo render_pass_info{
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            .renderPass = render_pass,
+            .framebuffer = swap_framebuffers[image_index],
+            .renderArea = {
+                .offset = {0, 0},
+                .extent = swap_chain_extent,
+            },
+            .clearValueCount = 1,
+            .pClearValues = &clear_color,
+        };
+
+        // Recording the render pass in the command buffer.
+        vkCmdBeginRenderPass(command_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
 
 
+        VkViewport viewport{
+            .x = 0.0f,
+            .y = 0.0f,
+            .width = (float) swap_chain_extent.width,
+            .height = (float) swap_chain_extent.width,
+            .minDepth = 0.0f,
+            .maxDepth = 1.0f,
+        };
+        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+        VkRect2D scissor{
+            .offset = {0, 0},
+            .extent = swap_chain_extent,
+        };
+        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+        // Draw 3 vertices!
+        vkCmdDraw(command_buffer,
+            3, // Number of vertices
+            1, // Number of instances
+            0, // First gl_VertexIndex
+            0  // First gl_InstanceIndex
+            );
+        
+        vkCmdEndRenderPass(command_buffer);
+
+        if ((result = vkEndCommandBuffer(command_buffer)) != VK_SUCCESS) {
+            std::cerr << "Failed to successfully record command buffer: " << string_VkResult(result) << "\n";
+            return 1;
+        }
+    }
 
     // SDL event loop
     SDL_Event e;
@@ -673,6 +753,8 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "Exiting...\n";
+
+    vkDestroyCommandPool(device, command_pool, apiAllocCallbacks);
 
     for (auto &fb : swap_framebuffers) {
         vkDestroyFramebuffer(device, fb, apiAllocCallbacks);
