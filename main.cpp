@@ -587,12 +587,23 @@ int main(int argc, char** argv) {
             .pColorAttachments = &color_ref
         };
 
+        VkSubpassDependency dependency{
+            .srcSubpass = VK_SUBPASS_EXTERNAL,
+            .dstSubpass = 0,
+            .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask = 0,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        };
+
         VkRenderPassCreateInfo render_pass_info{
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
             .attachmentCount = 1,
             .pAttachments = &color_attachment,
             .subpassCount = 1,
-            .pSubpasses = &subpass
+            .pSubpasses = &subpass,
+            .dependencyCount = 1,
+            .pDependencies = &dependency,
         };
 
         if ((result = vkCreateRenderPass(device, &render_pass_info, apiAllocCallbacks, &render_pass)) != VK_SUCCESS) {
@@ -674,70 +685,34 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::size_t image_index = 0;
-    { // Record our command buffer!
-        VkCommandBufferBeginInfo begin_info{
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            .pNext = NULL,
-            .flags = 0,
-            .pInheritanceInfo = NULL,
+    VkSemaphore image_available_sem;
+    VkSemaphore render_finished_sem;
+    VkFence in_flight_fence;
+    {
+        VkSemaphoreCreateInfo semaphore_info{
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
         };
-        if ((result = vkBeginCommandBuffer(command_buffer, &begin_info)) != VK_SUCCESS) {
-            std::cerr << "Failed to begin command buffer: " << string_VkResult(result) << "\n";
+        if ((result = vkCreateSemaphore(device, &semaphore_info, apiAllocCallbacks, &image_available_sem)) != VK_SUCCESS) {
+            std::cerr << "Failed to create semaphore: " << string_VkResult(result) << "\n";
+            return 1;
+        }
+        if ((result = vkCreateSemaphore(device, &semaphore_info, apiAllocCallbacks, &render_finished_sem)) != VK_SUCCESS) {
+            std::cerr << "Failed to create semaphore: " << string_VkResult(result) << "\n";
             return 1;
         }
 
-        VkClearValue clear_color = {{{
-            0.0f, 0.0f, 0.0f, 1.0f
-        }}};
-        VkRenderPassBeginInfo render_pass_info{
-            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-            .renderPass = render_pass,
-            .framebuffer = swap_framebuffers[image_index],
-            .renderArea = {
-                .offset = {0, 0},
-                .extent = swap_chain_extent,
-            },
-            .clearValueCount = 1,
-            .pClearValues = &clear_color,
+        VkFenceCreateInfo fence_info{
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            .flags = VK_FENCE_CREATE_SIGNALED_BIT,
         };
 
-        // Recording the render pass in the command buffer.
-        vkCmdBeginRenderPass(command_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
-
-
-        VkViewport viewport{
-            .x = 0.0f,
-            .y = 0.0f,
-            .width = (float) swap_chain_extent.width,
-            .height = (float) swap_chain_extent.width,
-            .minDepth = 0.0f,
-            .maxDepth = 1.0f,
-        };
-        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
-
-        VkRect2D scissor{
-            .offset = {0, 0},
-            .extent = swap_chain_extent,
-        };
-        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
-
-        // Draw 3 vertices!
-        vkCmdDraw(command_buffer,
-            3, // Number of vertices
-            1, // Number of instances
-            0, // First gl_VertexIndex
-            0  // First gl_InstanceIndex
-            );
-        
-        vkCmdEndRenderPass(command_buffer);
-
-        if ((result = vkEndCommandBuffer(command_buffer)) != VK_SUCCESS) {
-            std::cerr << "Failed to successfully record command buffer: " << string_VkResult(result) << "\n";
+        if ((result = vkCreateFence(device, &fence_info, apiAllocCallbacks, &in_flight_fence)) != VK_SUCCESS) {
+            std::cerr << "Failed to create fence: " << string_VkResult(result) << "\n";
             return 1;
         }
     }
+
+    uint32_t image_index = 0;
 
     // SDL event loop
     SDL_Event e;
@@ -750,10 +725,113 @@ int main(int argc, char** argv) {
                 break;
             }
         }
+
+        vkWaitForFences(device, 1, &in_flight_fence, VK_TRUE, std::numeric_limits<std::uint64_t>::max());
+        vkResetFences(device, 1, &in_flight_fence);
+
+        vkAcquireNextImageKHR(device, swap_chain, UINT64_MAX, image_available_sem, VK_NULL_HANDLE, &image_index);
+        vkResetCommandBuffer(command_buffer, 0);
+
+        { // Record our command buffer!
+            VkCommandBufferBeginInfo begin_info{
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                .pNext = NULL,
+                .flags = 0,
+                .pInheritanceInfo = NULL,
+            };
+            if ((result = vkBeginCommandBuffer(command_buffer, &begin_info)) != VK_SUCCESS) {
+                std::cerr << "Failed to begin command buffer: " << string_VkResult(result) << "\n";
+                return 1;
+            }
+
+            VkClearValue clear_color = {{{
+                0.0f, 0.0f, 0.0f, 1.0f
+            }}};
+            VkRenderPassBeginInfo render_pass_info{
+                .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                .renderPass = render_pass,
+                .framebuffer = swap_framebuffers[image_index],
+                .renderArea = {
+                    .offset = {0, 0},
+                    .extent = swap_chain_extent,
+                },
+                .clearValueCount = 1,
+                .pClearValues = &clear_color,
+            };
+
+            // Recording the render pass in the command buffer.
+            vkCmdBeginRenderPass(command_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
+
+
+            VkViewport viewport{
+                .x = 0.0f,
+                .y = 0.0f,
+                .width = (float) swap_chain_extent.width,
+                .height = (float) swap_chain_extent.width,
+                .minDepth = 0.0f,
+                .maxDepth = 1.0f,
+            };
+            vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+            VkRect2D scissor{
+                .offset = {0, 0},
+                .extent = swap_chain_extent,
+            };
+            vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+            // Draw 3 vertices!
+            vkCmdDraw(command_buffer,
+                3, // Number of vertices
+                1, // Number of instances
+                0, // First gl_VertexIndex
+                0  // First gl_InstanceIndex
+                );
+            
+            vkCmdEndRenderPass(command_buffer);
+
+            if ((result = vkEndCommandBuffer(command_buffer)) != VK_SUCCESS) {
+                std::cerr << "Failed to successfully record command buffer: " << string_VkResult(result) << "\n";
+                return 1;
+            }
+        }
+
+
+        VkPipelineStageFlags wait_stages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+        VkSubmitInfo submit_info{
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &image_available_sem,
+            .pWaitDstStageMask = wait_stages,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &command_buffer,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = &render_finished_sem,
+        };
+
+        if ((result = vkQueueSubmit(graphics_queue, 1, &submit_info, in_flight_fence)) != VK_SUCCESS) {
+            std::cerr << "Failed to submit to queue: " << string_VkResult(result) << "\n";
+            return 1;
+        }
+
+        VkPresentInfoKHR present_info{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &render_finished_sem,
+            .swapchainCount = 1,
+            .pSwapchains = &swap_chain,
+            .pImageIndices = &image_index,
+            .pResults = NULL,
+        };
+
+        vkQueuePresentKHR(present_queue, &present_info);
     }
 
     std::cout << "Exiting...\n";
 
+    vkDestroyFence(device, in_flight_fence, apiAllocCallbacks);
+    vkDestroySemaphore(device, render_finished_sem, apiAllocCallbacks);
+    vkDestroySemaphore(device, image_available_sem, apiAllocCallbacks);
     vkDestroyCommandPool(device, command_pool, apiAllocCallbacks);
 
     for (auto &fb : swap_framebuffers) {
