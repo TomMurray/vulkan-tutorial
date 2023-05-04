@@ -657,6 +657,9 @@ int main(int argc, char** argv) {
 
     VkCommandPool command_pool;
     { // Create the command pool
+
+        // The RESET_COMMAND_BUFFER flag here lets us re-use the command buffer for
+        // encoding after resetting it.
         VkCommandPoolCreateInfo pool_info{
             .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
             .pNext = NULL,
@@ -670,45 +673,50 @@ int main(int argc, char** argv) {
         }
     }
 
-    VkCommandBuffer command_buffer;
+    // Setup to handle N frames in flight
+    const int max_frames_in_flight = 2;
+
+    std::vector<VkCommandBuffer> command_buffer(max_frames_in_flight);
     {
         VkCommandBufferAllocateInfo alloc_info{
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             .commandPool = command_pool,
             .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1,
+            .commandBufferCount = max_frames_in_flight,
         };
 
-        if ((result = vkAllocateCommandBuffers(device, &alloc_info, &command_buffer)) != VK_SUCCESS) {
+        if ((result = vkAllocateCommandBuffers(device, &alloc_info, command_buffer.data())) != VK_SUCCESS) {
             std::cerr << "Failed to create command buffer: " << string_VkResult(result) << "\n";
             return 1;
         }
     }
 
-    VkSemaphore image_available_sem;
-    VkSemaphore render_finished_sem;
-    VkFence in_flight_fence;
+    std::vector<VkSemaphore> image_available_sem(max_frames_in_flight);
+    std::vector<VkSemaphore> render_finished_sem(max_frames_in_flight);
+    std::vector<VkFence> in_flight_fence(max_frames_in_flight);
+    // next_frame always % max_frames_in_flight
+    uint32_t next_frame = 0;
     {
         VkSemaphoreCreateInfo semaphore_info{
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
         };
-        if ((result = vkCreateSemaphore(device, &semaphore_info, apiAllocCallbacks, &image_available_sem)) != VK_SUCCESS) {
-            std::cerr << "Failed to create semaphore: " << string_VkResult(result) << "\n";
-            return 1;
-        }
-        if ((result = vkCreateSemaphore(device, &semaphore_info, apiAllocCallbacks, &render_finished_sem)) != VK_SUCCESS) {
-            std::cerr << "Failed to create semaphore: " << string_VkResult(result) << "\n";
-            return 1;
-        }
-
         VkFenceCreateInfo fence_info{
             .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
             .flags = VK_FENCE_CREATE_SIGNALED_BIT,
         };
-
-        if ((result = vkCreateFence(device, &fence_info, apiAllocCallbacks, &in_flight_fence)) != VK_SUCCESS) {
-            std::cerr << "Failed to create fence: " << string_VkResult(result) << "\n";
-            return 1;
+        for (std::size_t i = 0; i != max_frames_in_flight; ++i) {
+            if ((result = vkCreateSemaphore(device, &semaphore_info, apiAllocCallbacks, &image_available_sem[i])) != VK_SUCCESS) {
+                std::cerr << "Failed to create semaphore: " << string_VkResult(result) << "\n";
+                return 1;
+            }
+            if ((result = vkCreateSemaphore(device, &semaphore_info, apiAllocCallbacks, &render_finished_sem[i])) != VK_SUCCESS) {
+                std::cerr << "Failed to create semaphore: " << string_VkResult(result) << "\n";
+                return 1;
+            }
+            if ((result = vkCreateFence(device, &fence_info, apiAllocCallbacks, &in_flight_fence[i])) != VK_SUCCESS) {
+                std::cerr << "Failed to create fence: " << string_VkResult(result) << "\n";
+                return 1;
+            }
         }
     }
 
@@ -726,11 +734,15 @@ int main(int argc, char** argv) {
             }
         }
 
-        vkWaitForFences(device, 1, &in_flight_fence, VK_TRUE, std::numeric_limits<std::uint64_t>::max());
-        vkResetFences(device, 1, &in_flight_fence);
+        // Note that we need to wait for the frame in question to no longer be in-flight
+        // because it would be an error for us to reset the command buffer while the
+        // GPU may still be/may be about to read from it.
+        vkWaitForFences(device, 1, &in_flight_fence[next_frame], VK_TRUE, std::numeric_limits<std::uint64_t>::max());
+        vkResetFences(device, 1, &in_flight_fence[next_frame]);
 
-        vkAcquireNextImageKHR(device, swap_chain, UINT64_MAX, image_available_sem, VK_NULL_HANDLE, &image_index);
-        vkResetCommandBuffer(command_buffer, 0);
+        vkAcquireNextImageKHR(device, swap_chain, UINT64_MAX, image_available_sem[next_frame], VK_NULL_HANDLE, &image_index);
+        std::cout << "Acquired next image with index " << image_index << "\n";
+        vkResetCommandBuffer(command_buffer[next_frame], 0);
 
         { // Record our command buffer!
             VkCommandBufferBeginInfo begin_info{
@@ -739,7 +751,7 @@ int main(int argc, char** argv) {
                 .flags = 0,
                 .pInheritanceInfo = NULL,
             };
-            if ((result = vkBeginCommandBuffer(command_buffer, &begin_info)) != VK_SUCCESS) {
+            if ((result = vkBeginCommandBuffer(command_buffer[next_frame], &begin_info)) != VK_SUCCESS) {
                 std::cerr << "Failed to begin command buffer: " << string_VkResult(result) << "\n";
                 return 1;
             }
@@ -760,8 +772,8 @@ int main(int argc, char** argv) {
             };
 
             // Recording the render pass in the command buffer.
-            vkCmdBeginRenderPass(command_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
-            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
+            vkCmdBeginRenderPass(command_buffer[next_frame], &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(command_buffer[next_frame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
 
 
             VkViewport viewport{
@@ -772,28 +784,29 @@ int main(int argc, char** argv) {
                 .minDepth = 0.0f,
                 .maxDepth = 1.0f,
             };
-            vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+            vkCmdSetViewport(command_buffer[next_frame], 0, 1, &viewport);
 
             VkRect2D scissor{
                 .offset = {0, 0},
                 .extent = swap_chain_extent,
             };
-            vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+            vkCmdSetScissor(command_buffer[next_frame], 0, 1, &scissor);
 
             // Draw 3 vertices!
-            vkCmdDraw(command_buffer,
+            vkCmdDraw(command_buffer[next_frame],
                 3, // Number of vertices
                 1, // Number of instances
                 0, // First gl_VertexIndex
                 0  // First gl_InstanceIndex
                 );
             
-            vkCmdEndRenderPass(command_buffer);
+            vkCmdEndRenderPass(command_buffer[next_frame]);
 
-            if ((result = vkEndCommandBuffer(command_buffer)) != VK_SUCCESS) {
+            if ((result = vkEndCommandBuffer(command_buffer[next_frame])) != VK_SUCCESS) {
                 std::cerr << "Failed to successfully record command buffer: " << string_VkResult(result) << "\n";
                 return 1;
             }
+
         }
 
 
@@ -801,15 +814,15 @@ int main(int argc, char** argv) {
         VkSubmitInfo submit_info{
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &image_available_sem,
+            .pWaitSemaphores = &image_available_sem[next_frame],
             .pWaitDstStageMask = wait_stages,
             .commandBufferCount = 1,
-            .pCommandBuffers = &command_buffer,
+            .pCommandBuffers = &command_buffer[next_frame],
             .signalSemaphoreCount = 1,
-            .pSignalSemaphores = &render_finished_sem,
+            .pSignalSemaphores = &render_finished_sem[next_frame],
         };
 
-        if ((result = vkQueueSubmit(graphics_queue, 1, &submit_info, in_flight_fence)) != VK_SUCCESS) {
+        if ((result = vkQueueSubmit(graphics_queue, 1, &submit_info, in_flight_fence[next_frame])) != VK_SUCCESS) {
             std::cerr << "Failed to submit to queue: " << string_VkResult(result) << "\n";
             return 1;
         }
@@ -817,7 +830,7 @@ int main(int argc, char** argv) {
         VkPresentInfoKHR present_info{
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &render_finished_sem,
+            .pWaitSemaphores = &render_finished_sem[next_frame],
             .swapchainCount = 1,
             .pSwapchains = &swap_chain,
             .pImageIndices = &image_index,
@@ -825,15 +838,23 @@ int main(int argc, char** argv) {
         };
 
         vkQueuePresentKHR(present_queue, &present_info);
+
+        next_frame = (next_frame + 1) % max_frames_in_flight;
     }
 
     std::cout << "Exiting...\n";
 
     vkDeviceWaitIdle(device);
 
-    vkDestroyFence(device, in_flight_fence, apiAllocCallbacks);
-    vkDestroySemaphore(device, render_finished_sem, apiAllocCallbacks);
-    vkDestroySemaphore(device, image_available_sem, apiAllocCallbacks);
+    for (auto &fence : in_flight_fence) {
+        vkDestroyFence(device, fence, apiAllocCallbacks);
+    }
+    for (auto &sem : render_finished_sem) {
+        vkDestroySemaphore(device, sem, apiAllocCallbacks);
+    }
+    for (auto &sem : image_available_sem) {
+        vkDestroySemaphore(device, sem, apiAllocCallbacks);
+    }
     vkDestroyCommandPool(device, command_pool, apiAllocCallbacks);
 
     for (auto &fb : swap_framebuffers) {
