@@ -46,6 +46,7 @@ int main(int argc, char** argv) {
                                    DEFAULT_WIDTH,
                                    DEFAULT_HEIGHT,
                                    SDL_WINDOW_SHOWN |
+                                   SDL_WINDOW_RESIZABLE |
                                    SDL_WINDOW_VULKAN)) == NULL) {
         std::cerr << "Failed to create SDL window: " << SDL_GetError() << "\n";
         return 1;
@@ -157,6 +158,34 @@ int main(int argc, char** argv) {
         std::vector<VkSurfaceFormatKHR> formats;
         std::vector<VkPresentModeKHR> modes;
     } swap_chain_support{};
+
+    auto get_swap_chain_support = [&](const VkPhysicalDevice &device) {
+        // Check swap-chain support
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &swap_chain_support.caps);
+
+        uint32_t format_count = 0;
+        vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, NULL);
+
+        if (format_count == 0) {
+            return false;
+        }
+
+        swap_chain_support.formats.resize(format_count);
+        vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, swap_chain_support.formats.data());
+
+
+        uint32_t present_mode_count = 0;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &present_mode_count, NULL);
+
+        if (present_mode_count == 0) {
+            return false;
+        }
+
+        swap_chain_support.modes.resize(present_mode_count);
+        vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &present_mode_count, swap_chain_support.modes.data());
+        return true;
+    };
+    
     {
         uint32_t device_count = 0;
         vkEnumeratePhysicalDevices(instance, &device_count, NULL);
@@ -195,29 +224,9 @@ int main(int argc, char** argv) {
                 continue;
             }
 
-            // Check swap-chain support
-            vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &swap_chain_support.caps);
-
-            uint32_t format_count = 0;
-            vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, NULL);
-
-            if (format_count == 0) {
+            if (!get_swap_chain_support(device)) {
                 continue;
             }
-
-            swap_chain_support.formats.resize(format_count);
-            vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, swap_chain_support.formats.data());
-
-
-            uint32_t present_mode_count = 0;
-            vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &present_mode_count, NULL);
-
-            if (present_mode_count == 0) {
-                continue;
-            }
-
-            swap_chain_support.modes.resize(present_mode_count);
-            vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &present_mode_count, swap_chain_support.modes.data());
 
             physical_device = device;
             break;
@@ -520,6 +529,12 @@ int main(int argc, char** argv) {
     std::vector<VkFramebuffer> swap_framebuffers;
     VkExtent2D swap_chain_extent;
     auto create_swap_chain = [&]{
+        // Refresh swap chain support info
+        if (!get_swap_chain_support(physical_device)) {
+            std::cerr << "Failed to get swap chain support info\n";
+            return 1;
+        }
+
         // Prefer B8G8R8_SRGB over others, but we use a fallback.
         for (const auto &format : swap_chain_support.formats) {
             if (format.format == VK_FORMAT_B8G8R8_SRGB && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
@@ -736,6 +751,7 @@ int main(int argc, char** argv) {
     };
 
     auto recreate_swap_chain = [&]{
+        std::cout << "Recreating swap chain\n";
         vkDeviceWaitIdle(device);
         cleanup_swap_chain();
         return create_swap_chain();
@@ -760,7 +776,6 @@ int main(int argc, char** argv) {
         // because it would be an error for us to reset the command buffer while the
         // GPU may still be/may be about to read from it.
         vkWaitForFences(device, 1, &in_flight_fence[next_frame], VK_TRUE, std::numeric_limits<std::uint64_t>::max());
-        vkResetFences(device, 1, &in_flight_fence[next_frame]);
 
         if ((result = vkAcquireNextImageKHR(device, swap_chain, UINT64_MAX, image_available_sem[next_frame], VK_NULL_HANDLE, &image_index)) != VK_SUCCESS) {
             if (result == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -773,6 +788,8 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
+
+        vkResetFences(device, 1, &in_flight_fence[next_frame]);
         vkResetCommandBuffer(command_buffer[next_frame], 0);
 
         { // Record our command buffer!
@@ -868,7 +885,16 @@ int main(int argc, char** argv) {
             .pResults = NULL,
         };
 
-        vkQueuePresentKHR(present_queue, &present_info);
+        if ((result = vkQueuePresentKHR(present_queue, &present_info)) != VK_SUCCESS) {
+            if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+                if (recreate_swap_chain()) {
+                    return 1;
+                }
+            } else {
+                std::cerr << "Failed to present: " << string_VkResult(result) << "\n";
+                return 1;
+            }
+        }
 
         next_frame = (next_frame + 1) % max_frames_in_flight;
     }
