@@ -762,32 +762,52 @@ int main(int argc, char** argv) {
     }
 
     // create vertex buffer
-    const uint32_t n_vertices = 3;
+    const uint32_t n_vertices = 4;
     const uint32_t bytes_per_vertex = 4 * 5;
     VkBuffer vb = VK_NULL_HANDLE;
     VkDeviceMemory vb_alloc = VK_NULL_HANDLE;
     VkBuffer vb_staging = VK_NULL_HANDLE;
     VkDeviceMemory vb_staging_alloc = VK_NULL_HANDLE;
+
     if (!create_buffer(vb_staging, vb_staging_alloc, device, device_memory_props, bytes_per_vertex * n_vertices, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
         return 1;
     }
+    // Upload the vertex data via Map
     {
-        // Upload the vertex data via Map
-        {
-            float vertex_data[] = {
-                 0.0f, -0.5f, 1.0f, 0.0f, 0.0f, // Top
-                 0.5f,  0.5f, 0.0f, 0.0f, 1.0f, // Bottom right
-                -0.5f,  0.5f, 0.0f, 1.0f, 0.0f, // Bottom left
-            };
-            const std::size_t bytes = sizeof(vertex_data);
-            std::cout << "Copying " << bytes << " bytes to vertex buffer memory\n";
-            void *ptr = nullptr;
-            vkMapMemory(device, vb_staging_alloc, 0, bytes_per_vertex * n_vertices, 0, &ptr);
-            std::memcpy(ptr, vertex_data, bytes);
-            vkUnmapMemory(device, vb_staging_alloc);
-        }
+        float vertex_data[] = {
+            -0.5f, -0.5f, 1.0f, 1.0f, 1.0f, // Top left
+             0.5f, -0.5f, 1.0f, 0.0f, 0.0f, // Top right
+             0.5f,  0.5f, 0.0f, 0.0f, 1.0f, // Bottom right
+            -0.5f,  0.5f, 0.0f, 1.0f, 0.0f, // Bottom left
+        };
+        const std::size_t bytes = sizeof(vertex_data);
+        void *ptr = nullptr;
+        vkMapMemory(device, vb_staging_alloc, 0, bytes, 0, &ptr);
+        std::memcpy(ptr, vertex_data, bytes);
+        vkUnmapMemory(device, vb_staging_alloc);
     }
     if (!create_buffer(vb, vb_alloc, device, device_memory_props, bytes_per_vertex * n_vertices, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+        return 1;
+    }
+
+    const uint32_t n_indices = 6;
+    const uint32_t bytes_per_index = 2;
+    VkBuffer ib, ib_staging;
+    VkDeviceMemory ib_alloc, ib_staging_alloc;
+    if (!create_buffer(ib_staging, ib_staging_alloc, device, device_memory_props, bytes_per_index * n_indices, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+        return 1;
+    }
+    {
+        uint16_t indices_data[] = {
+            0, 1, 2, 2, 3, 0,
+        };
+        const std::size_t bytes = bytes_per_index * n_indices;
+        void *ptr = nullptr;
+        vkMapMemory(device, ib_staging_alloc, 0, bytes, 0, &ptr);
+        std::memcpy(ptr, indices_data, bytes);
+        vkUnmapMemory(device, ib_staging_alloc);
+    }
+    if (!create_buffer(ib, ib_alloc, device, device_memory_props, bytes_per_index * n_indices, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
         return 1;
     }
 
@@ -920,6 +940,8 @@ int main(int argc, char** argv) {
         };
 
         vkCmdCopyBuffer(cmd_buf, vb_staging, vb, 1, &copy_region);
+        copy_region.size = bytes_per_index * n_indices;
+        vkCmdCopyBuffer(cmd_buf, ib_staging, ib, 1, &copy_region);
 
         vkEndCommandBuffer(cmd_buf);
 
@@ -942,7 +964,9 @@ int main(int argc, char** argv) {
 
         // Clean up staging buffer as well
         vkDestroyBuffer(device, vb_staging, apiAllocCallbacks);
+        vkDestroyBuffer(device, ib_staging, apiAllocCallbacks);
         vkFreeMemory(device, vb_staging_alloc, apiAllocCallbacks);
+        vkFreeMemory(device, ib_staging_alloc, apiAllocCallbacks);
     }
 
 
@@ -1030,13 +1054,10 @@ int main(int argc, char** argv) {
             VkDeviceSize offsets[] = { 0 };
             vkCmdBindVertexBuffers(command_buffer[next_frame], 0, 1, &vb, offsets);
 
+            vkCmdBindIndexBuffer(command_buffer[next_frame], ib, 0, VK_INDEX_TYPE_UINT16);
+
             // Draw 3 vertices!
-            vkCmdDraw(command_buffer[next_frame],
-                n_vertices, // Number of vertices
-                1, // Number of instances
-                0, // First gl_VertexIndex
-                0  // First gl_InstanceIndex
-                );
+            vkCmdDrawIndexed(command_buffer[next_frame], n_indices, 1, 0, 0, 0);
             
             vkCmdEndRenderPass(command_buffer[next_frame]);
 
