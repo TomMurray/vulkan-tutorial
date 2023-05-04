@@ -962,7 +962,7 @@ int main(int argc, char** argv) {
         vkFreeCommandBuffers(device, init_cmd_pool, 1, &cmd_buf);
         vkDestroyCommandPool(device, init_cmd_pool, apiAllocCallbacks);
 
-        // Clean up staging buffer as well
+        // Clean up staging buffers as well
         vkDestroyBuffer(device, vb_staging, apiAllocCallbacks);
         vkDestroyBuffer(device, ib_staging, apiAllocCallbacks);
         vkFreeMemory(device, vb_staging_alloc, apiAllocCallbacks);
@@ -1126,7 +1126,9 @@ int main(int argc, char** argv) {
     vkDestroyCommandPool(device, command_pool, apiAllocCallbacks);
 
     vkDestroyBuffer(device, vb, apiAllocCallbacks);
+    vkDestroyBuffer(device, ib, apiAllocCallbacks);
     vkFreeMemory(device, vb_alloc, apiAllocCallbacks);
+    vkFreeMemory(device, ib_alloc, apiAllocCallbacks);
 
     vkDestroyPipeline(device, graphics_pipeline, apiAllocCallbacks);
     vkDestroyRenderPass(device, render_pass, apiAllocCallbacks);
