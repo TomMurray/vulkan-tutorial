@@ -151,8 +151,6 @@ int main(int argc, char** argv) {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME
     };
 
-    VkPhysicalDevice physical_device = VK_NULL_HANDLE;
-    int queue_graphics_family = 0, queue_present_family = 0;
     struct SwapChainSupport {
         VkSurfaceCapabilitiesKHR caps;
         std::vector<VkSurfaceFormatKHR> formats;
@@ -186,6 +184,9 @@ int main(int argc, char** argv) {
         return true;
     };
     
+    VkPhysicalDevice physical_device = VK_NULL_HANDLE;
+    VkPhysicalDeviceMemoryProperties device_memory_props;
+    int queue_graphics_family = 0, queue_present_family = 0;
     {
         uint32_t device_count = 0;
         vkEnumeratePhysicalDevices(instance, &device_count, NULL);
@@ -238,6 +239,8 @@ int main(int argc, char** argv) {
         }
 
         std::cout << "Found a VkPhysicalDevice" << std::endl;
+
+        vkGetPhysicalDeviceMemoryProperties(physical_device, &device_memory_props);
 
         uint32_t queue_family_count = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, NULL);
@@ -380,12 +383,45 @@ int main(int argc, char** argv) {
             .pDynamicStates = dynamic_states.data(),
         };
 
-        VkPipelineVertexInputStateCreateInfo vertex_input{};
-        vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        vertex_input.vertexBindingDescriptionCount = 0;
-        vertex_input.pVertexBindingDescriptions = NULL;
-        vertex_input.vertexAttributeDescriptionCount = 0;
-        vertex_input.pVertexAttributeDescriptions = NULL;
+        // Create description of our vertex buffer binding
+        VkVertexInputBindingDescription input_binding{
+            .binding = 0,
+            // 5 32-bit floats, 2 for pos, 3 for colour
+            .stride = 5 * 4,
+            // This relates to instancing.
+            .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+        };
+
+        // Create descriptions of our vertex position & colour attributes
+        VkVertexInputAttributeDescription input_attrs[] = {
+            // Position
+            {
+                // Location is the location in the GLSL shader
+                .location = 0,
+                // Binding gives the binding slot of the vertex buffer that
+                // this attribute comes from
+                .binding = 0,
+                .format = VK_FORMAT_R32G32_SFLOAT,
+                .offset = 0,
+            },
+            // Colour
+            {
+                .location = 1,
+                .binding = 0,
+                .format = VK_FORMAT_R32G32B32_SFLOAT,
+                // Offset is 2 32-bit floats or (2 * 4) = 8 bytes
+                .offset = 2 * 4,
+            }
+        };
+
+        VkPipelineVertexInputStateCreateInfo vertex_input{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            .pNext = NULL,
+            .vertexBindingDescriptionCount = 1,
+            .pVertexBindingDescriptions = &input_binding,
+            .vertexAttributeDescriptionCount = 2,
+            .pVertexAttributeDescriptions = input_attrs,
+        };
 
         VkPipelineInputAssemblyStateCreateInfo input_assembly{};
         input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -673,6 +709,76 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // create vertex buffer
+    VkBuffer vb = VK_NULL_HANDLE;
+    VkDeviceMemory vb_alloc = VK_NULL_HANDLE;
+    const uint32_t n_vertices = 3;
+    {
+        VkBufferCreateInfo vb_info{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .pNext = NULL,
+            .flags = 0,
+            .size = 4 * 5 * n_vertices,
+            .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+
+        if ((result = vkCreateBuffer(device, &vb_info, apiAllocCallbacks, &vb)) != VK_SUCCESS) {
+            std::cerr << "Failed to create buffer for vertex data: " << string_VkResult(result) << "\n";
+            return 1;
+        }
+
+        // Get memory requirements
+        VkMemoryRequirements mem_req;
+        vkGetBufferMemoryRequirements(device, vb, &mem_req);
+
+        uint32_t type_filter = mem_req.memoryTypeBits;
+        // Properties we require to be present at a minimum for memory type:
+        uint32_t properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+        uint32_t alloc_type = 0;
+        for (; alloc_type != device_memory_props.memoryTypeCount; ++alloc_type) {
+            if ((type_filter & (1u << alloc_type)) &&
+                (device_memory_props.memoryTypes[alloc_type].propertyFlags & properties) == properties) {
+                break;
+            }
+        }
+        if (alloc_type >= device_memory_props.memoryTypeCount) {
+            std::cerr << "Failed to find a suitable memory type to allocate vertex buffer\n";
+            return 1;
+        }
+
+        VkMemoryAllocateInfo mem_alloc_info{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .pNext = NULL,
+            .allocationSize = mem_req.size,
+            .memoryTypeIndex = alloc_type,
+        };
+        if ((result = vkAllocateMemory(device, &mem_alloc_info, apiAllocCallbacks, &vb_alloc)) != VK_SUCCESS) {
+            std::cerr << "Failed to allocate memory for vertex buffer: " << string_VkResult(result) << "\n";
+            return 1;
+        }
+
+        const uint32_t binding_offset = 0;
+        vkBindBufferMemory(device, vb, vb_alloc, binding_offset);
+
+        // Upload the vertex data via Map
+        {
+            float vertex_data[] = {
+                 0.0f, -0.5f, 1.0f, 0.0f, 0.0f, // Top
+                 0.5f,  0.5f, 0.0f, 0.0f, 1.0f, // Bottom right
+                -0.5f,  0.5f, 0.0f, 1.0f, 0.0f, // Bottom left
+            };
+            const std::size_t bytes = sizeof(vertex_data);
+            std::cout << "Copying " << bytes << " bytes to vertex buffer memory\n";
+            void *ptr = nullptr;
+            vkMapMemory(device, vb_alloc, 0, vb_info.size, 0, &ptr);
+            std::memcpy(ptr, vertex_data, bytes);
+            vkUnmapMemory(device, vb_alloc);
+        }
+    }
+
 
     VkCommandPool command_pool;
     { // Create the command pool
@@ -823,7 +929,6 @@ int main(int argc, char** argv) {
             vkCmdBeginRenderPass(command_buffer[next_frame], &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
             vkCmdBindPipeline(command_buffer[next_frame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
 
-
             VkViewport viewport{
                 .x = 0.0f,
                 .y = 0.0f,
@@ -840,9 +945,12 @@ int main(int argc, char** argv) {
             };
             vkCmdSetScissor(command_buffer[next_frame], 0, 1, &scissor);
 
+            VkDeviceSize offsets[] = { 0 };
+            vkCmdBindVertexBuffers(command_buffer[next_frame], 0, 1, &vb, offsets);
+
             // Draw 3 vertices!
             vkCmdDraw(command_buffer[next_frame],
-                3, // Number of vertices
+                n_vertices, // Number of vertices
                 1, // Number of instances
                 0, // First gl_VertexIndex
                 0  // First gl_InstanceIndex
@@ -913,6 +1021,9 @@ int main(int argc, char** argv) {
         vkDestroySemaphore(device, sem, apiAllocCallbacks);
     }
     vkDestroyCommandPool(device, command_pool, apiAllocCallbacks);
+
+    vkDestroyBuffer(device, vb, apiAllocCallbacks);
+    vkFreeMemory(device, vb_alloc, apiAllocCallbacks);
 
     vkDestroyPipeline(device, graphics_pipeline, apiAllocCallbacks);
     vkDestroyRenderPass(device, render_pass, apiAllocCallbacks);
