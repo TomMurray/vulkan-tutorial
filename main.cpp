@@ -28,6 +28,58 @@ static std::vector<char> read_bytes(const char *file_path) {
     return bytes;
 }
 
+static bool create_buffer(VkBuffer &b, VkDeviceMemory &mem,
+    const VkDevice &device, const VkPhysicalDeviceMemoryProperties &mem_props, uint32_t bytes, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties) {
+    VkBufferCreateInfo buffer_info{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = NULL,
+        .flags = 0,
+        .size = bytes,
+        .usage = usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VkResult result;
+    if ((result = vkCreateBuffer(device, &buffer_info, nullptr, &b)) != VK_SUCCESS) {
+        std::cerr << "Failed to create buffer: " << string_VkResult(result) << "\n";
+        return false;
+    }
+
+    VkMemoryRequirements mem_req;
+    vkGetBufferMemoryRequirements(device, b, &mem_req);
+
+
+    uint32_t type_filter = mem_req.memoryTypeBits;
+
+    uint32_t type_idx = 0;
+    for (; type_idx != mem_props.memoryTypeCount; ++type_idx) {
+        if ((type_filter & (1u << type_idx)) &&
+            (mem_props.memoryTypes[type_idx].propertyFlags & properties) == properties) { 
+            break;
+        }
+    }
+    if (type_idx >= mem_props.memoryTypeCount) {
+        std::cerr << "Failed to find a suitable memory type to allocate buffer\n";
+        return false;
+    }
+
+    VkMemoryAllocateInfo alloc_info{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = NULL,
+        .allocationSize = mem_req.size,
+        .memoryTypeIndex = type_idx,
+    };
+
+    if ((result = vkAllocateMemory(device, &alloc_info, nullptr, &mem)) != VK_SUCCESS) {
+        std::cerr << "Failed to allocate memory for buffer: " << string_VkResult(result) << "\n";
+        return false;
+    }
+
+    // For now we don't do bind offsets.
+    vkBindBufferMemory(device, b, mem, 0);
+
+    return true;
+}
+
 int main(int argc, char** argv) {
     // Initialise SDL subsystems - loading everything for
     // now though we don't need it.
@@ -710,59 +762,16 @@ int main(int argc, char** argv) {
     }
 
     // create vertex buffer
+    const uint32_t n_vertices = 3;
+    const uint32_t bytes_per_vertex = 4 * 5;
     VkBuffer vb = VK_NULL_HANDLE;
     VkDeviceMemory vb_alloc = VK_NULL_HANDLE;
-    const uint32_t n_vertices = 3;
+    VkBuffer vb_staging = VK_NULL_HANDLE;
+    VkDeviceMemory vb_staging_alloc = VK_NULL_HANDLE;
+    if (!create_buffer(vb_staging, vb_staging_alloc, device, device_memory_props, bytes_per_vertex * n_vertices, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+        return 1;
+    }
     {
-        VkBufferCreateInfo vb_info{
-            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .pNext = NULL,
-            .flags = 0,
-            .size = 4 * 5 * n_vertices,
-            .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        };
-
-        if ((result = vkCreateBuffer(device, &vb_info, apiAllocCallbacks, &vb)) != VK_SUCCESS) {
-            std::cerr << "Failed to create buffer for vertex data: " << string_VkResult(result) << "\n";
-            return 1;
-        }
-
-        // Get memory requirements
-        VkMemoryRequirements mem_req;
-        vkGetBufferMemoryRequirements(device, vb, &mem_req);
-
-        uint32_t type_filter = mem_req.memoryTypeBits;
-        // Properties we require to be present at a minimum for memory type:
-        uint32_t properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-
-        uint32_t alloc_type = 0;
-        for (; alloc_type != device_memory_props.memoryTypeCount; ++alloc_type) {
-            if ((type_filter & (1u << alloc_type)) &&
-                (device_memory_props.memoryTypes[alloc_type].propertyFlags & properties) == properties) {
-                break;
-            }
-        }
-        if (alloc_type >= device_memory_props.memoryTypeCount) {
-            std::cerr << "Failed to find a suitable memory type to allocate vertex buffer\n";
-            return 1;
-        }
-
-        VkMemoryAllocateInfo mem_alloc_info{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .pNext = NULL,
-            .allocationSize = mem_req.size,
-            .memoryTypeIndex = alloc_type,
-        };
-        if ((result = vkAllocateMemory(device, &mem_alloc_info, apiAllocCallbacks, &vb_alloc)) != VK_SUCCESS) {
-            std::cerr << "Failed to allocate memory for vertex buffer: " << string_VkResult(result) << "\n";
-            return 1;
-        }
-
-        const uint32_t binding_offset = 0;
-        vkBindBufferMemory(device, vb, vb_alloc, binding_offset);
-
         // Upload the vertex data via Map
         {
             float vertex_data[] = {
@@ -773,10 +782,13 @@ int main(int argc, char** argv) {
             const std::size_t bytes = sizeof(vertex_data);
             std::cout << "Copying " << bytes << " bytes to vertex buffer memory\n";
             void *ptr = nullptr;
-            vkMapMemory(device, vb_alloc, 0, vb_info.size, 0, &ptr);
+            vkMapMemory(device, vb_staging_alloc, 0, bytes_per_vertex * n_vertices, 0, &ptr);
             std::memcpy(ptr, vertex_data, bytes);
-            vkUnmapMemory(device, vb_alloc);
+            vkUnmapMemory(device, vb_staging_alloc);
         }
+    }
+    if (!create_buffer(vb, vb_alloc, device, device_memory_props, bytes_per_vertex * n_vertices, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+        return 1;
     }
 
 
@@ -862,6 +874,76 @@ int main(int argc, char** argv) {
         cleanup_swap_chain();
         return create_swap_chain();
     };
+
+    // Perform initial vertex data copy to device local buffer.
+    {
+        VkCommandPool init_cmd_pool;
+        VkCommandPoolCreateInfo create_info{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .pNext = NULL,
+            // This will only be used to produce a single command buffer,
+            // and then we'll get rid of it, so use transient flag.
+            .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+            .queueFamilyIndex = static_cast<uint32_t>(queue_graphics_family),
+        };
+        if ((result = vkCreateCommandPool(device, &create_info, apiAllocCallbacks, &init_cmd_pool)) != VK_SUCCESS) {
+            std::cerr << "Failed to create vertex data upload command pool: " << string_VkResult(result) << "\n";
+            return 1;
+        }
+
+        VkCommandBuffer cmd_buf;
+        VkCommandBufferAllocateInfo cmd_buf_info{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .pNext = NULL,
+            .commandPool = init_cmd_pool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
+
+        if ((result = vkAllocateCommandBuffers(device, &cmd_buf_info, &cmd_buf)) != VK_SUCCESS) {
+            std::cerr << "Failed to create vertex data upload command buffer: " << string_VkResult(result) << "\n";
+            return 1;
+        }
+
+        VkCommandBufferBeginInfo begin_info{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .pNext = NULL,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            .pInheritanceInfo = NULL,
+        };
+        vkBeginCommandBuffer(cmd_buf, &begin_info);
+
+        VkBufferCopy copy_region{
+            .srcOffset = 0,
+            .dstOffset = 0,
+            .size = bytes_per_vertex * n_vertices,
+        };
+
+        vkCmdCopyBuffer(cmd_buf, vb_staging, vb, 1, &copy_region);
+
+        vkEndCommandBuffer(cmd_buf);
+
+        VkSubmitInfo submit_info{
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .waitSemaphoreCount = 0,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &cmd_buf,
+            .signalSemaphoreCount = 0,
+        };
+        if ((result = vkQueueSubmit(graphics_queue, 1, &submit_info, VK_NULL_HANDLE)) != VK_SUCCESS) {
+            std::cerr << "Failed to submit initial buffer copy to graphics queue: " << string_VkResult(result) << "\n";
+            return 1;
+        }
+        // Wait for everything to complete.
+        vkQueueWaitIdle(graphics_queue);
+
+        vkFreeCommandBuffers(device, init_cmd_pool, 1, &cmd_buf);
+        vkDestroyCommandPool(device, init_cmd_pool, apiAllocCallbacks);
+
+        // Clean up staging buffer as well
+        vkDestroyBuffer(device, vb_staging, apiAllocCallbacks);
+        vkFreeMemory(device, vb_staging_alloc, apiAllocCallbacks);
+    }
 
 
     uint32_t image_index = 0;
