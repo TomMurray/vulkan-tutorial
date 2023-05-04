@@ -311,127 +311,6 @@ int main(int argc, char** argv) {
     vkGetDeviceQueue(device, queue_graphics_family, 0, &graphics_queue);
     vkGetDeviceQueue(device, queue_present_family, 0, &present_queue);
 
-    VkSwapchainKHR swap_chain = VK_NULL_HANDLE;
-    std::vector<VkImageView> swap_image_views;
-    VkExtent2D swap_chain_extent;
-    VkSurfaceFormatKHR selected_format = swap_chain_support.formats.front();
-    { // Create the swap chain
-        // Prefer B8G8R8_SRGB over others, but we use a fallback.
-        for (const auto &format : swap_chain_support.formats) {
-            if (format.format == VK_FORMAT_B8G8R8_SRGB && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-                selected_format = format;
-                break;
-            }
-        }
-
-        VkPresentModeKHR selected_present_mode = swap_chain_support.modes.front();
-        for (const auto &present_mode : swap_chain_support.modes) {
-            if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR) {
-                selected_present_mode = present_mode;
-                break;
-            }
-        }
-
-        if (swap_chain_support.caps.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
-            swap_chain_extent = swap_chain_support.caps.currentExtent;
-        } else {
-            int width, height;
-            SDL_Vulkan_GetDrawableSize(window, &width, &height);
-            VkExtent2D ext = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
-
-            // Clamping based on reported capabilities of the swap chain
-            ext.width = std::clamp(ext.width, swap_chain_support.caps.minImageExtent.width, swap_chain_support.caps.maxImageExtent.width);
-            ext.height = std::clamp(ext.height, swap_chain_support.caps.minImageExtent.height, swap_chain_support.caps.maxImageExtent.height);
-
-            swap_chain_extent = ext;
-        }
-
-        // Choose image count for swap chain
-        // The minimum means we might have to wait on the driver before
-        // we can acquire another image to render to. Therefore request
-        // at least one more image than the min.
-        uint32_t image_count = swap_chain_support.caps.minImageCount + 1;
-
-        if (swap_chain_support.caps.maxImageCount != 0) {
-            image_count = std::min(image_count, swap_chain_support.caps.maxImageCount);
-        }
-
-        VkSwapchainCreateInfoKHR create_info{};
-        create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-        create_info.surface = surface;
-        create_info.minImageCount = image_count;
-        create_info.imageColorSpace = selected_format.colorSpace;
-        create_info.imageFormat = selected_format.format;
-        create_info.imageExtent = swap_chain_extent;
-        create_info.imageArrayLayers = 1;
-        create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-
-        // Some extra configuration depending on whether the graphics and
-        // present queue families are different. We must either explicitly
-        // manage ownership of an image by different queues, or use the
-        // concurrent sharing mode to allow shared ownership between queues which is what we do here.
-        uint32_t queue_family_indices[] = {
-            static_cast<uint32_t>(queue_graphics_family),
-            static_cast<uint32_t>(queue_present_family)
-        };
-
-        if (queue_graphics_family != queue_present_family) {
-            create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
-            create_info.queueFamilyIndexCount = 2;
-            create_info.pQueueFamilyIndices = queue_family_indices;
-        } else {
-            create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            create_info.queueFamilyIndexCount = 1;
-            create_info.pQueueFamilyIndices = NULL;
-        }
-
-        create_info.preTransform = swap_chain_support.caps.currentTransform;
-        create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-        create_info.presentMode = selected_present_mode;
-        // e.g. if another window comes in front of the game window, this
-        // will mean we actually clip those pixels and don't produce colour
-        // values for them.
-        create_info.clipped = VK_TRUE;
-        create_info.oldSwapchain = VK_NULL_HANDLE;
-
-        if ((result = vkCreateSwapchainKHR(device, &create_info, NULL, &swap_chain)) != VK_SUCCESS) {
-            std::cerr << "Failed to create swap chain: " << string_VkResult(result) << "\n";
-            return 1;
-        }
-
-        std::cout << "Created swap chain\n";
-
-        vkGetSwapchainImagesKHR(device, swap_chain, &image_count, NULL);
-        std::vector<VkImage> swap_images(image_count);
-        vkGetSwapchainImagesKHR(device, swap_chain, &image_count, swap_images.data());
-
-        // Create image views for our swap chain images
-        swap_image_views.resize(image_count);
-        for (std::size_t i = 0; i != swap_images.size(); ++i) {
-            VkImageViewCreateInfo create_info{};
-            create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            create_info.image = swap_images[i];
-
-            create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            create_info.format = selected_format.format;
-            create_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-            create_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-            create_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-            create_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-
-            create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            create_info.subresourceRange.baseMipLevel = 0;
-            create_info.subresourceRange.levelCount = 1;
-            create_info.subresourceRange.baseArrayLayer = 0;
-            create_info.subresourceRange.layerCount = 1;
-
-            if ((result = vkCreateImageView(device, &create_info, apiAllocCallbacks, &swap_image_views[i])) != VK_SUCCESS) {
-                std::cerr << "Failed to create swap chain image view " << i << ": " << string_VkResult(result) << "\n";
-                return 1;
-            }
-        }
-    }
-
     // Load shader SPIR-V
     VkShaderModule vert_module = VK_NULL_HANDLE, frag_module = VK_NULL_HANDLE;
     {
@@ -454,9 +333,9 @@ int main(int argc, char** argv) {
             std::cerr << "Failed to create shader module for fragment shader: " << string_VkResult(result) << "\n";
             return 1;
         }
-
     }
 
+    VkSurfaceFormatKHR selected_format = swap_chain_support.formats.front();
 
     VkRenderPass render_pass;
     VkPipelineLayout pipeline_layout;
@@ -636,24 +515,149 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::vector<VkFramebuffer> swap_framebuffers(swap_image_views.size());
-    for (std::size_t i = 0; i != swap_image_views.size(); ++i) {
-        VkFramebufferCreateInfo framebuffer_info{
-            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-            .pNext = NULL,
-            .renderPass = render_pass,
-            .attachmentCount = 1,
-            .pAttachments = &swap_image_views[i],
-            .width = swap_chain_extent.width,
-            .height = swap_chain_extent.height,
-            .layers = 1
+    VkSwapchainKHR swap_chain = VK_NULL_HANDLE;
+    std::vector<VkImageView> swap_image_views;
+    std::vector<VkFramebuffer> swap_framebuffers;
+    VkExtent2D swap_chain_extent;
+    auto create_swap_chain = [&]{
+        // Prefer B8G8R8_SRGB over others, but we use a fallback.
+        for (const auto &format : swap_chain_support.formats) {
+            if (format.format == VK_FORMAT_B8G8R8_SRGB && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+                selected_format = format;
+                break;
+            }
+        }
+
+        VkPresentModeKHR selected_present_mode = swap_chain_support.modes.front();
+        for (const auto &present_mode : swap_chain_support.modes) {
+            if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+                selected_present_mode = present_mode;
+                break;
+            }
+        }
+
+        if (swap_chain_support.caps.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
+            swap_chain_extent = swap_chain_support.caps.currentExtent;
+        } else {
+            int width, height;
+            SDL_Vulkan_GetDrawableSize(window, &width, &height);
+            VkExtent2D ext = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
+
+            // Clamping based on reported capabilities of the swap chain
+            ext.width = std::clamp(ext.width, swap_chain_support.caps.minImageExtent.width, swap_chain_support.caps.maxImageExtent.width);
+            ext.height = std::clamp(ext.height, swap_chain_support.caps.minImageExtent.height, swap_chain_support.caps.maxImageExtent.height);
+
+            swap_chain_extent = ext;
+        }
+
+        // Choose image count for swap chain
+        // The minimum means we might have to wait on the driver before
+        // we can acquire another image to render to. Therefore request
+        // at least one more image than the min.
+        uint32_t image_count = swap_chain_support.caps.minImageCount + 1;
+
+        if (swap_chain_support.caps.maxImageCount != 0) {
+            image_count = std::min(image_count, swap_chain_support.caps.maxImageCount);
+        }
+
+        VkSwapchainCreateInfoKHR create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+        create_info.surface = surface;
+        create_info.minImageCount = image_count;
+        create_info.imageColorSpace = selected_format.colorSpace;
+        create_info.imageFormat = selected_format.format;
+        create_info.imageExtent = swap_chain_extent;
+        create_info.imageArrayLayers = 1;
+        create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+        // Some extra configuration depending on whether the graphics and
+        // present queue families are different. We must either explicitly
+        // manage ownership of an image by different queues, or use the
+        // concurrent sharing mode to allow shared ownership between queues which is what we do here.
+        uint32_t queue_family_indices[] = {
+            static_cast<uint32_t>(queue_graphics_family),
+            static_cast<uint32_t>(queue_present_family)
         };
 
-        if ((result = vkCreateFramebuffer(device, &framebuffer_info, apiAllocCallbacks, &swap_framebuffers[i])) != VK_SUCCESS) {
-            std::cerr << "Error creating framebuffer for swap image " << i << ": " << string_VkResult(result) << "\n";
+        if (queue_graphics_family != queue_present_family) {
+            create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+            create_info.queueFamilyIndexCount = 2;
+            create_info.pQueueFamilyIndices = queue_family_indices;
+        } else {
+            create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            create_info.queueFamilyIndexCount = 1;
+            create_info.pQueueFamilyIndices = NULL;
+        }
+
+        create_info.preTransform = swap_chain_support.caps.currentTransform;
+        create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        create_info.presentMode = selected_present_mode;
+        // e.g. if another window comes in front of the game window, this
+        // will mean we actually clip those pixels and don't produce colour
+        // values for them.
+        create_info.clipped = VK_TRUE;
+        create_info.oldSwapchain = VK_NULL_HANDLE;
+
+        if ((result = vkCreateSwapchainKHR(device, &create_info, NULL, &swap_chain)) != VK_SUCCESS) {
+            std::cerr << "Failed to create swap chain: " << string_VkResult(result) << "\n";
             return 1;
         }
+
+        std::cout << "Created swap chain\n";
+
+        vkGetSwapchainImagesKHR(device, swap_chain, &image_count, NULL);
+        std::vector<VkImage> swap_images(image_count);
+        vkGetSwapchainImagesKHR(device, swap_chain, &image_count, swap_images.data());
+
+        // Create image views for our swap chain images
+        swap_image_views.resize(image_count);
+        for (std::size_t i = 0; i != swap_images.size(); ++i) {
+            VkImageViewCreateInfo create_info{};
+            create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            create_info.image = swap_images[i];
+
+            create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            create_info.format = selected_format.format;
+            create_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+            create_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+            create_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+            create_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+
+            create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            create_info.subresourceRange.baseMipLevel = 0;
+            create_info.subresourceRange.levelCount = 1;
+            create_info.subresourceRange.baseArrayLayer = 0;
+            create_info.subresourceRange.layerCount = 1;
+
+            if ((result = vkCreateImageView(device, &create_info, apiAllocCallbacks, &swap_image_views[i])) != VK_SUCCESS) {
+                std::cerr << "Failed to create swap chain image view " << i << ": " << string_VkResult(result) << "\n";
+                return 1;
+            }
+        }
+        swap_framebuffers.resize(image_count);
+        for (std::size_t i = 0; i != swap_image_views.size(); ++i) {
+            VkFramebufferCreateInfo framebuffer_info{
+                .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                .pNext = NULL,
+                .renderPass = render_pass,
+                .attachmentCount = 1,
+                .pAttachments = &swap_image_views[i],
+                .width = swap_chain_extent.width,
+                .height = swap_chain_extent.height,
+                .layers = 1
+            };
+
+            if ((result = vkCreateFramebuffer(device, &framebuffer_info, apiAllocCallbacks, &swap_framebuffers[i])) != VK_SUCCESS) {
+                std::cerr << "Error creating framebuffer for swap image " << i << ": " << string_VkResult(result) << "\n";
+                return 1;
+            }
+        }
+        return 0;
+    };
+    if (create_swap_chain()) {
+        return 1;
     }
+
 
     VkCommandPool command_pool;
     { // Create the command pool
@@ -720,6 +724,24 @@ int main(int argc, char** argv) {
         }
     }
 
+    auto cleanup_swap_chain = [&]{
+        for (auto &fb : swap_framebuffers) {
+            vkDestroyFramebuffer(device, fb, apiAllocCallbacks);
+        }
+
+        for (auto &view : swap_image_views) {
+            vkDestroyImageView(device, view, apiAllocCallbacks);
+        }
+        vkDestroySwapchainKHR(device, swap_chain, apiAllocCallbacks);
+    };
+
+    auto recreate_swap_chain = [&]{
+        vkDeviceWaitIdle(device);
+        cleanup_swap_chain();
+        return create_swap_chain();
+    };
+
+
     uint32_t image_index = 0;
 
     // SDL event loop
@@ -740,8 +762,17 @@ int main(int argc, char** argv) {
         vkWaitForFences(device, 1, &in_flight_fence[next_frame], VK_TRUE, std::numeric_limits<std::uint64_t>::max());
         vkResetFences(device, 1, &in_flight_fence[next_frame]);
 
-        vkAcquireNextImageKHR(device, swap_chain, UINT64_MAX, image_available_sem[next_frame], VK_NULL_HANDLE, &image_index);
-        std::cout << "Acquired next image with index " << image_index << "\n";
+        if ((result = vkAcquireNextImageKHR(device, swap_chain, UINT64_MAX, image_available_sem[next_frame], VK_NULL_HANDLE, &image_index)) != VK_SUCCESS) {
+            if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+                if (recreate_swap_chain()) {
+                    return 1;
+                }
+                continue;
+            } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+                std::cerr << "Failed to acquire next swap chain image: " << string_VkResult(result) << "\n";
+                return 1;
+            }
+        }
         vkResetCommandBuffer(command_buffer[next_frame], 0);
 
         { // Record our command buffer!
@@ -857,10 +888,6 @@ int main(int argc, char** argv) {
     }
     vkDestroyCommandPool(device, command_pool, apiAllocCallbacks);
 
-    for (auto &fb : swap_framebuffers) {
-        vkDestroyFramebuffer(device, fb, apiAllocCallbacks);
-    }
-
     vkDestroyPipeline(device, graphics_pipeline, apiAllocCallbacks);
     vkDestroyRenderPass(device, render_pass, apiAllocCallbacks);
     vkDestroyPipelineLayout(device, pipeline_layout, apiAllocCallbacks);
@@ -868,10 +895,7 @@ int main(int argc, char** argv) {
     vkDestroyShaderModule(device, vert_module, apiAllocCallbacks);
     vkDestroyShaderModule(device, frag_module, apiAllocCallbacks);
 
-    for (auto &view : swap_image_views) {
-        vkDestroyImageView(device, view, apiAllocCallbacks);
-    }
-    vkDestroySwapchainKHR(device, swap_chain, apiAllocCallbacks);
+    cleanup_swap_chain();
     vkDestroyDevice(device, apiAllocCallbacks);
     vkDestroySurfaceKHR(instance, surface, apiAllocCallbacks);
     vkDestroyInstance(instance, apiAllocCallbacks);
